@@ -1,0 +1,31 @@
+policy_module(denatd, 0.0.1)
+
+require {
+	type devlog_t;
+	type kernel_t;
+	type node_t;
+	type unconfined_t;
+};
+
+type denatd_t;
+type denatd_exec_t;
+type denatd_port_t;
+
+init_daemon_domain(denatd_t, denatd_exec_t)
+corenet_port(denatd_port_t)
+
+# Allow logging to syslog
+allow denatd_t self:unix_dgram_socket { create connect write };                                                            
+allow denatd_t devlog_t:sock_file write;                                                                                     
+allow denatd_t kernel_t:unix_dgram_socket sendto;
+
+# getifaddrs(3) uses a netlink socket
+allow denatd_t self:netlink_route_socket { create bind getattr write nlmsg_read read };
+
+# TCP socket permissions
+allow denatd_t self:tcp_socket { create bind listen accept write };
+allow denatd_t denatd_port_t:tcp_socket { name_bind };
+allow denatd_t node_t:tcp_socket { node_bind };
+
+# Allow unconfined programs to talk to the service
+allow unconfined_t denatd_port_t:tcp_socket { name_connect };

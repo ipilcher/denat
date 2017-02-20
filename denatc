@@ -1,0 +1,267 @@
+#!/usr/bin/python
+
+import ConfigParser
+import requests
+import netaddr
+import socket
+import string
+import errno
+import stat
+import sys
+import re
+import os
+
+###
+###	Config file parsing
+###
+
+def get_ipv4_gateway():
+
+        with open('/proc/net/route') as fh:
+
+                for line in fh:
+
+                        fields = line.strip().split()
+                        if fields[1] != '00000000' or not int(fields[3], 16) & 2:
+                                continue
+
+                        return netaddr.IPAddress(socket.htonl(int(fields[2], 16)))
+
+                return None
+
+
+def get_ipv6_gateway():
+
+       with open('/proc/net/ipv6_route') as fh:
+
+                for line in fh:
+
+                        fields = line.strip().split()
+                        if fields[0] != '00000000000000000000000000000000' or not int(fields[8], 16) & 2:
+                                continue
+
+                        return netaddr.IPAddress(int(fields[4], 16))
+
+                return None
+
+
+def parse_config():
+
+	cp = ConfigParser.RawConfigParser()
+	cp.read(['/etc/denatc/denatc.conf'])
+
+	cfg = {}
+
+	if cp.has_option('firewall', 'host'):
+		cfg['host'] = cp.get('firewall', 'host')
+	else:
+		cfg['host'] = get_ipv4_gateway()
+		if cfg['host'] is None:
+			cfg['host'] = get_ipv6_gateway()
+
+	cfg['port'] = 9797
+	if cp.has_option('firewall', 'port'):
+		cfg['port'] = cp.get('firewall', 'port')
+
+	cfg['interface'] = None
+	if cp.has_option('firewall', 'interface'):
+		cfg['interface'] = cp.get('firewall', 'interface')
+
+	cfg['username'] = cp.get('dns', 'username')
+	cfg['password'] = cp.get('dns', 'password')
+
+	if cp.has_option('dns', 'hostname'):
+		cfg['hostname'] = cp.get('dns', 'hostname')
+	else:
+		cfg['hostname'] = socket.getfqdn(socket.gethostname()).partition('.')[2]
+
+	return cfg
+
+
+###
+###	Get public IPs from the firewall
+###
+
+def is_public_ip(ip):
+
+        return not ( ip.is_reserved()
+                        or ip.is_private()
+                        or ip.is_multicast()
+                        or ip.is_loopback()
+                        or ip.is_link_local()
+                        or ip.is_ipv4_mapped()
+                        or ip.is_ipv4_compat()  )
+
+
+def get_firewall_ips(cfg):
+
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	s.connect((cfg['host'], cfg['port']))
+	lines = s.recv(1024).splitlines()
+	s.close()
+
+	public_ips = { 4: None, 6: None }
+
+	for line in lines:
+
+		fields = string.split(line)
+		if fields[0] != cfg['interface']:
+			continue;
+
+		ip = netaddr.IPAddress(fields[1])
+		if not is_public_ip(ip):
+			continue
+
+		if public_ips[ip.version] is not None:
+			sys.stderr.write('Ignoring additional address: {0}\n'.format(ip))
+			continue;
+
+		public_ips[ip.version] = ip
+
+	return public_ips
+
+
+###
+###	Update dyn.com DNS
+###
+
+def update_dns(cfg, firewall_ips):
+
+	dns_ips = []
+	if firewall_ips[4] is not None:
+		dns_ips.append(firewall_ips[4])
+	if firewall_ips[6] is not None:
+		dns_ips.append(firewall_ips[6])
+	if len(dns_ips) == 0:
+		sys.stderr.write('No IP addresses\n')
+		return
+
+	try:
+		req = requests.get('http://members.dyndns.org/v3/update',
+				   auth=(cfg['username'], cfg['password']),
+				   params={ 'hostname': cfg['hostname'], 'myip': dns_ips })
+	except Exception as e:
+		sys.stderr.write('DNS update error: {0}\n'.format(unicode(e)))
+		return
+
+	if req.status_code != 200 or string.split(req.text)[0] != 'good':
+		sys.stderr.write('DNS update error: {0}: {1}: {2}\n'.format(
+				 req.status_code, req.reason, req.text))
+
+
+###
+###	Update Asterisk SIP configuration
+###
+
+def update_sip_conf(firewall_ips):
+
+	if firewall_ips[4] is None:
+		sys.stderr.write('No IPv4 address\n')
+		return
+
+	with open('/etc/asterisk/sip.conf', 'r') as fh:
+		old = fh.read()
+
+	p = re.compile('^externaddr=.*$', re.MULTILINE)
+	new = p.sub('externaddr={0}'.format(firewall_ips[4]), old, count=1)
+
+	try:
+		os.remove('/etc/asterisk/sip.conf.new')
+	except EnvironmentError as e:
+		if e.errno != errno.ENOENT:
+			raise
+
+	umask = os.umask(0)
+	try:
+		fd = os.open('/etc/asterisk/sip.conf.new',
+			     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+			     stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP)
+	finally:
+		os.umask(umask)
+
+	with os.fdopen(fd, 'w') as fh:
+		fh.write(new)
+
+	os.rename('/etc/asterisk/sip.conf.new', '/etc/asterisk/sip.conf')
+
+
+def reload_sip_conf():
+
+	try:
+		s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+		s.connect('/var/run/asterisk/asterisk.ctl')
+		s.recv(256)
+		s.send('cli quit after sip reload\0')
+		s.recv(256)
+	finally:
+		s.close()
+
+
+###
+###	State file
+###
+
+def read_state_file():
+
+	state_ips = { 4: None, 6: None }
+
+	try:
+		with open('/var/lib/denatc/state', 'r') as fh:
+			lines = fh.read().splitlines()
+	except EnvironmentError as e:
+		if e.errno == errno.ENOENT:
+			return state_ips
+		else:
+			raise
+
+	for line in lines:
+		ip = netaddr.IPAddress(line)
+		if state_ips[ip.version] is not None:
+			sys.stderr.write('Ignoring additional IP address in state file: {0}\n'.format(ip))
+			continue
+		state_ips[ip.version] = ip
+
+	return state_ips
+
+
+def write_state_file(ips):
+
+	try:
+		os.remove('/var/lib/denatc/state.new')
+	except EnvironmentError as e:
+		if e.errno != errno.ENOENT:
+			raise
+
+	fd = os.open('/var/lib/denatc/state.new', os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+		     stat.S_IRUSR | stat.S_IWUSR)
+	try:
+		for ip in ips.values():
+			if ip is not None:
+				os.write(fd, '{0}\n'.format(ip))
+	finally:
+		os.close(fd)
+
+	os.rename('/var/lib/denatc/state.new', '/var/lib/denatc/state')
+	
+
+###
+###	Do something!
+###
+
+cfg = parse_config()
+state_ips = read_state_file()
+public_ips = get_firewall_ips(cfg)
+
+if public_ips != state_ips:
+
+	print 'Public IP(s) have changed'
+	print '\told: {0}'.format(state_ips)
+	print '\tnew: {0}'.format(public_ips)
+
+	update_dns(cfg, public_ips)
+
+	if public_ips[4] != state_ips[4]:
+		update_sip_conf(public_ips)
+		reload_sip_conf()
+
+	write_state_file(public_ips)

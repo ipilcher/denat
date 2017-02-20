@@ -1,0 +1,12 @@
+[Unit]
+Description=IP address reporting service
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/denatd
+User=nobody
+Group=nobody
+
+[Install]
+WantedBy=multi-user.target
