@@ -2,14 +2,59 @@
 
 import ConfigParser
 import requests
+import lockfile
 import netaddr
+import logging
+import daemon
 import socket
 import string
 import errno
+import time
 import stat
 import sys
 import re
 import os
+
+from logging.handlers import SysLogHandler
+
+
+###
+###	 Intial setup
+###
+
+debug = False
+foreground = False
+
+for arg in sys.argv[1:]:
+	if arg == '-d' or arg == '--debug':
+		debug = True
+	elif arg == '-f' or arg == '--foreground':
+		foreground = True
+	else:
+		sys.stderr.write('{0}: Unknown option: {1}\n'.format(sys.argv[0], arg))
+
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.DEBUG if debug else logging.INFO)
+
+if foreground:
+
+	LOG.addHandler(logging.StreamHandler())
+
+else:
+
+	lh = SysLogHandler(address = '/dev/log', facility = SysLogHandler.LOG_DAEMON)
+	LOG.addHandler(lh)
+
+	try:
+		dc = daemon.DaemonContext(detach_process = True, files_preserve = [ lh.socket.fileno() ])
+		dc.open()
+		pf = os.open('/run/denatc/denatc.pid', os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+			     stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+		os.write(pf, '{0}\n'.format(os.getpid()))
+	except Exception as e:
+		LOG.critical(unicode(e), exc_info = 1)
+		raise
+
 
 ###
 ###	Config file parsing
@@ -96,9 +141,14 @@ def is_public_ip(ip):
 def get_firewall_ips(cfg):
 
 	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	s.connect((cfg['host'], cfg['port']))
-	lines = s.recv(1024).splitlines()
-	s.close()
+	try:
+		s.connect((cfg['host'], cfg['port']))
+		lines = s.recv(1024).splitlines()
+	except Exception as e:
+		LOG.error(unicode(e))
+		return None
+	finally:
+		s.close()
 
 	public_ips = { 4: None, 6: None }
 
@@ -113,7 +163,7 @@ def get_firewall_ips(cfg):
 			continue
 
 		if public_ips[ip.version] is not None:
-			sys.stderr.write('Ignoring additional address: {0}\n'.format(ip))
+			LOG.warning('Ignoring extra public address: %s', ip)
 			continue;
 
 		public_ips[ip.version] = ip
@@ -133,7 +183,7 @@ def update_dns(cfg, firewall_ips):
 	if firewall_ips[6] is not None:
 		dns_ips.append(firewall_ips[6])
 	if len(dns_ips) == 0:
-		sys.stderr.write('No IP addresses\n')
+		LOG.warning('No IP addresses; not updating DNS')
 		return
 
 	try:
@@ -141,12 +191,11 @@ def update_dns(cfg, firewall_ips):
 				   auth=(cfg['username'], cfg['password']),
 				   params={ 'hostname': cfg['hostname'], 'myip': dns_ips })
 	except Exception as e:
-		sys.stderr.write('DNS update error: {0}\n'.format(unicode(e)))
+		LOG.error('DNS update error: %s', unicode(e))
 		return
 
 	if req.status_code != 200 or string.split(req.text)[0] != 'good':
-		sys.stderr.write('DNS update error: {0}: {1}: {2}\n'.format(
-				 req.status_code, req.reason, req.text))
+		LOG.error('DNS update error: %s: %s: %s', req.status_code, req.reason, req.text)
 
 
 ###
@@ -156,7 +205,7 @@ def update_dns(cfg, firewall_ips):
 def update_sip_conf(firewall_ips):
 
 	if firewall_ips[4] is None:
-		sys.stderr.write('No IPv4 address\n')
+		LOG.warning('No IPV4 address; not updating Asterisk')
 		return
 
 	with open('/etc/asterisk/sip.conf', 'r') as fh:
@@ -217,7 +266,7 @@ def read_state_file():
 	for line in lines:
 		ip = netaddr.IPAddress(line)
 		if state_ips[ip.version] is not None:
-			sys.stderr.write('Ignoring additional IP address in state file: {0}\n'.format(ip))
+			LOG.warning('Ignoring extra IP address in state file: %s', ip)
 			continue
 		state_ips[ip.version] = ip
 
@@ -248,20 +297,32 @@ def write_state_file(ips):
 ###	Do something!
 ###
 
-cfg = parse_config()
-state_ips = read_state_file()
-public_ips = get_firewall_ips(cfg)
+try:
 
-if public_ips != state_ips:
+	cfg = parse_config()
+	state_ips = read_state_file()
 
-	print 'Public IP(s) have changed'
-	print '\told: {0}'.format(state_ips)
-	print '\tnew: {0}'.format(public_ips)
+	while True:
 
-	update_dns(cfg, public_ips)
+		public_ips = get_firewall_ips(cfg)
 
-	if public_ips[4] != state_ips[4]:
-		update_sip_conf(public_ips)
-		reload_sip_conf()
+		if public_ips is not None and public_ips != state_ips:
 
-	write_state_file(public_ips)
+			LOG.info('Public IP(s) have changed')
+			LOG.info('\told: %s', state_ips)
+			LOG.info('\tnew: %s', public_ips)
+
+			update_dns(cfg, public_ips)
+
+			if public_ips[4] != state_ips[4]:
+				update_sip_conf(public_ips)
+				reload_sip_conf()
+
+			write_state_file(public_ips)
+			state_ips = public_ips
+
+		time.sleep(60)
+
+except Exception as e:
+
+	LOG.critical(unicode(e), exc_info=1)
