@@ -172,10 +172,10 @@ def get_firewall_ips(cfg):
 
 
 ###
-###	Update dyn.com DNS
+###	Update dyn.com DNS - unused
 ###
 
-def update_dns(cfg, firewall_ips):
+def update_dyn_dns(cfg, firewall_ips):
 
 	dns_ips = []
 	if firewall_ips[4] is not None:
@@ -196,6 +196,38 @@ def update_dns(cfg, firewall_ips):
 
 	if req.status_code != 200 or string.split(req.text)[0] != 'good':
 		LOG.error('DNS update error: %s: %s: %s', req.status_code, req.reason, req.text)
+
+
+###
+###	Update Hurricane Electric DNS
+###
+
+def update_he_dns_ip(cfg, auth, ip):
+
+	try:
+		req = requests.get('https://dyn.dns.he.net/nic/update', auth=auth,
+				   params={ 'hostname': cfg['hostname'], 'myip': ip })
+	except Exception as e:
+		LOG.error('DNS update error: {0}\n'.format(unicode(e)))
+		return
+
+	if req.status_code != 200 or string.split(req.text)[0] != 'good':
+		LOG.error('DNS update error: {0}: {1}: {2}\n'.format(
+			  req.status_code, req.reason. req.text))
+
+
+def update_he_dns(cfg, firewall_ips):
+
+	if len(firewall_ips) == 0:
+		LOG.warning('No IP addresses\n')
+		return
+
+	auth = (cfg['hostname'], cfg['password'])
+
+	if firewall_ips[4] is not None:
+		update_he_dns_ip(cfg, auth, firewall_ips[4])
+	if firewall_ips[6] is not None:
+		update_he_dns_ip(cfg, auth, firewall_ips[6])
 
 
 ###
@@ -312,7 +344,7 @@ try:
 			LOG.info('\told: %s', state_ips)
 			LOG.info('\tnew: %s', public_ips)
 
-			update_dns(cfg, public_ips)
+			update_he_dns(cfg, public_ips)
 
 			if public_ips[4] != state_ips[4]:
 				update_sip_conf(public_ips)
