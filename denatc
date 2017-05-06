@@ -194,7 +194,9 @@ def update_dyn_dns(cfg, firewall_ips):
 		LOG.error('DNS update error: %s', unicode(e))
 		return
 
-	if req.status_code != 200 or string.split(req.text)[0] != 'good':
+	result = string.split(req.text)[0]
+
+	if req.status_code != 200 or (result != 'good' and result != 'nochg'):
 		LOG.error('DNS update error: %s: %s: %s', req.status_code, req.reason, req.text)
 
 
@@ -206,14 +208,15 @@ def update_he_dns_ip(cfg, auth, ip):
 
 	try:
 		req = requests.get('https://dyn.dns.he.net/nic/update', auth=auth,
-				   params={ 'hostname': cfg['hostname'], 'myip': ip })
+				   params={ 'hostname': cfg['hostname'], 'myip': ip },
+				   verify='/etc/denatc/he-root-ca.crt')
 	except Exception as e:
 		LOG.error('DNS update error: {0}\n'.format(unicode(e)))
 		return
 
 	if req.status_code != 200 or string.split(req.text)[0] != 'good':
 		LOG.error('DNS update error: {0}: {1}: {2}\n'.format(
-			  req.status_code, req.reason. req.text))
+			  req.status_code, req.reason, req.text))
 
 
 def update_he_dns(cfg, firewall_ips):
