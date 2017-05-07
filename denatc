@@ -198,10 +198,11 @@ def update_he_dns_ip(cfg, auth, ip):
 	except Exception as e:
 		LOG.error('DNS update error: {0}\n'.format(unicode(e)))
 		return
-
-	if req.status_code != 200 or string.split(req.text)[0] != 'good':
-		LOG.error('DNS update error: {0}: {1}: {2}\n'.format(
-			  req.status_code, req.reason, req.text))
+	if req.status_code != 200:
+		response = string.split(req.text)[0]
+		if response != 'good' and response != 'nochg':
+			LOG.error('DNS update error: {0}: {1}: {2}\n'.format(
+				  req.status_code, req.reason, req.text))
 
 
 def update_he_dns(cfg, firewall_ips):
