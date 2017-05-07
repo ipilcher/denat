@@ -1,0 +1,79 @@
+policy_module(denatc, 0.0.1)
+
+require {
+	type asterisk_var_run_t;
+	type asterisk_etc_t;
+	type shell_exec_t;
+	type http_port_t;
+	type net_conf_t;
+	type proc_net_t;
+	type asterisk_t;
+	type kernel_t;
+	type devlog_t;
+	type proc_t;
+	type tmp_t;
+};
+
+type denatc_t;
+type denat_port_t;
+type denatc_etc_t;
+type denatc_exec_t;
+type denatc_var_lib_t;
+
+init_daemon_domain(denatc_t, denatc_exec_t)
+files_type(denatc_etc_t)
+files_type(denatc_var_lib_t)
+corenet_port(denat_port_t)
+
+# syslog
+allow denatc_t self:unix_dgram_socket { create connect write };
+allow denatc_t kernel_t:unix_dgram_socket { sendto };
+allow denatc_t devlog_t:sock_file { write };
+
+# state directory - /var/lib/denatc
+allow denatc_t denatc_var_lib_t:dir { search write add_name remove_name };
+allow denatc_t denatc_var_lib_t:file { write create read open getattr unlink rename };
+
+# configuration directory - /etc/denatc
+allow denatc_t denatc_etc_t:dir { search };
+allow denatc_t denatc_etc_t:file { read open getattr };
+
+# Python uses glibc's qsort(), which reads /proc/meminfo
+allow denatc_t proc_t:file { read open getattr };
+
+# If the firewall's IP isn't specified ...
+bool denatc_read_routes false;
+if (denatc_read_routes) {
+	allow denatc_t proc_net_t:file { read open getattr };
+}
+
+# Socket to denatd on firewall
+allow denatc_t self:tcp_socket { create connect read };
+allow denatc_t denat_port_t:tcp_socket { name_connect };
+
+# /etc/hosts & /etc/resolv.conf
+allow denatc_t net_conf_t:file { read open getattr };
+
+# UDP socket for DNS
+allow denatc_t self:udp_socket { create connect write read };
+
+# SSL to Hurricane Electric
+allow denatc_t self:tcp_socket { setopt getopt getattr write };
+allow denatc_t http_port_t:tcp_socket { name_connect };
+
+# Asterisk
+allow denatc_t asterisk_etc_t:dir { search write add_name remove_name };
+allow denatc_t asterisk_etc_t:file { read open getattr create write unlink rename };
+allow denatc_t asterisk_var_run_t:dir { search };
+allow denatc_t asterisk_t:unix_stream_socket { connectto };
+
+
+#
+#	dontaudit rules
+#
+
+dontaudit denatc_t shell_exec_t:file { execute };
+dontaudit denatc_t tmp_t:dir { write };
+dontaudit denatc_t denatc_var_lib_t:file { ioctl };
+dontaudit denatc_t self:udp_socket { getattr };
+dontaudit denatc_t self:netlink_route_socket { create };
