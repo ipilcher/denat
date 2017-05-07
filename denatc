@@ -330,8 +330,8 @@ try:
 		if public_ips is not None and public_ips != state_ips:
 
 			LOG.info('Public IP(s) have changed')
-			LOG.info('\told: %s', state_ips)
-			LOG.info('\tnew: %s', public_ips)
+			LOG.info('... old: %s', state_ips)
+			LOG.info('... new: %s', public_ips)
 
 			update_he_dns(cfg, public_ips)
 
