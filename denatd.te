@@ -2,6 +2,7 @@ policy_module(denatd, 0.0.1)
 
 require {
 	type devlog_t;
+	type dhcpc_var_run_t;
 	type kernel_t;
 	type node_t;
 	type unconfined_t;
@@ -29,3 +30,6 @@ allow denatd_t node_t:tcp_socket { node_bind };
 
 # Allow unconfined programs to talk to the service
 allow unconfined_t denatd_port_t:tcp_socket { name_connect };
+
+# Allow reading the dhclient prefix file
+allow denatd_t dhcpc_var_run_t:file { read open };
