@@ -6,6 +6,7 @@
 #include <ifaddrs.h>
 #include <syslog.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <inttypes.h>
 #include <stdlib.h>
@@ -17,6 +18,8 @@
 
 #define EXEC_NAME	"denatd"
 #define OUTBUF_SIZE	1000
+
+static const char prefix_file[] = "/run/dhclient6-prefix";
 
 /*
  *      Command-line options
@@ -378,6 +381,45 @@ static void get_ips(void)
                 warn("Output truncated\n");
 }
 
+static void get_prefix(void)
+{
+	char buf[100];
+	ssize_t size;
+	int fd;
+	
+	if ((fd = open(prefix_file, O_RDONLY)) < 0) {
+		if (errno == ENOENT) {
+			info("Prefix file (%s) missing\n", prefix_file);
+			return;
+		}
+		error("%s: %m\n", prefix_file);
+		abort();
+	}
+	
+	if ((size = read(fd, buf, sizeof buf)) < 0) {
+		error("%s: %m\n", prefix_file);
+		abort();
+	}
+	
+	if (size > 0) {
+		--size;
+		if (buf[size] != '\n') {
+			warn("Prefix file (%s) not newline terminated\n",
+			     prefix_file);
+		}
+		else {
+			buf[size] = '\0';
+			if (bprintf("%s\n", buf))
+				warn("Output truncated\n");
+		}
+	}
+	
+	if (close(fd) < 0) {
+		error("%s: %m\n", prefix_file);
+		abort();
+	}
+}
+
 static int get_socket(void)
 {
 	char buf[INET6_ADDRSTRLEN];
@@ -481,6 +523,7 @@ int main(int argc, char *argv[])
 			log_conn(&sockaddr);
 
 		get_ips();
+		get_prefix();
 
 		if (write(sockfd, outbuf, cursor) != cursor)
 			warn("write: %m\n");
