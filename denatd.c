@@ -409,7 +409,7 @@ static void get_prefix(void)
 		}
 		else {
 			buf[size] = '\0';
-			if (bprintf("%s\n", buf))
+			if (bprintf("__PREFIX__ %s\n", buf))
 				warn("Output truncated\n");
 		}
 	}
