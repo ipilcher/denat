@@ -135,11 +135,20 @@ def get_firewall_ips(cfg):
 	finally:
 		s.close()
 
-	public_ips = { 4: None, 6: None }
+	public_ips = { 4: None, 6: None, 'prefix': None }
 
 	for line in lines:
 
 		fields = string.split(line)
+
+		if fields[0] == '__PREFIX__' and len(fields) > 1:
+			prefix = netaddr.IPNetwork(fields[1])
+			if prefix.prefixlen == 56:
+				public_ips['prefix'] = prefix
+			else:
+				LOG.warning('Ignoring prefix: %s', str(prefix))
+			continue
+
 		if fields[0] != cfg['interface']:
 			continue;
 
@@ -193,8 +202,7 @@ def update_he_dns_ip(cfg, auth, ip):
 
 	try:
 		req = requests.get('https://dyn.dns.he.net/nic/update', auth=auth,
-				   params={ 'hostname': cfg['hostname'], 'myip': ip },
-				   verify='/etc/denatc/he-root-ca.crt')
+				   params={ 'hostname': cfg['hostname'], 'myip': ip })
 	except Exception as e:
 		LOG.error('DNS update error: {0}\n'.format(unicode(e)))
 		return
@@ -273,7 +281,7 @@ def reload_sip_conf():
 
 def read_state_file():
 
-	state_ips = { 4: None, 6: None }
+	state_ips = { 4: None, 6: None, 'prefix': None }
 
 	try:
 		with open('/var/lib/denatc/state', 'r') as fh:
@@ -285,11 +293,18 @@ def read_state_file():
 			raise
 
 	for line in lines:
-		ip = netaddr.IPAddress(line)
-		if state_ips[ip.version] is not None:
-			LOG.warning('Ignoring extra IP address in state file: %s', ip)
-			continue
-		state_ips[ip.version] = ip
+
+		net = netaddr.IPNetwork(line)
+		if net.version == 6 and net.prefixlen != 128:
+			if state_ips['prefix'] is None:
+				state_ips['prefix'] = net
+			else:
+				LOG.warning('Ignoring extra IPv6 prefix in state file: %s', str(net))
+		else:
+			if state_ips[net.version] is None:
+				state_ips[net.version] = net.ip
+			else:
+				LOG.warning('Ignoring extra IP address in state file: %s', net.ip)
 
 	return state_ips
 
@@ -307,7 +322,7 @@ def write_state_file(ips):
 	try:
 		for ip in ips.values():
 			if ip is not None:
-				os.write(fd, '{0}\n'.format(ip))
+				os.write(fd, '{0}\n'.format(str(ip)))
 	finally:
 		os.close(fd)
 
