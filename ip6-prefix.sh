@@ -13,7 +13,7 @@ ip6_prefix() {
     /usr/sbin/ip6tables -F FWD-INET6-IN
 
     # Do we have a new prefix?
-    if [ -n "$new_ip6_prefix" ] then
+    if [ -n "$new_ip6_prefix" ] ; then
 
 	# Is it the right size?
 	if [ ${new_ip6_prefix#*/} = 56 ] ; then
