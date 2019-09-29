@@ -105,6 +105,9 @@ def parse_config():
 	else:
 		cfg['hostname'] = socket.getfqdn(socket.gethostname()).partition('.')[2]
 
+	cfg['host_addr'] = netaddr.IPAddress(cp.get('address', 'host'), 6)
+	cfg['host_int'] = cp.get('address', 'interface')
+
 	return cfg
 
 
