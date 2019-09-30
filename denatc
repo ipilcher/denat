@@ -2,6 +2,7 @@
 
 import ConfigParser
 import requests
+import pyroute2
 import netaddr
 import logging
 import socket
@@ -39,6 +40,10 @@ if foreground:
 else:
 	lh = SysLogHandler(address = '/dev/log', facility = SysLogHandler.LOG_DAEMON)
 	LOG.addHandler(lh)
+
+# Suppress pyroute2 warning about unreadable /proc/net/psched
+pyroute_tcmsg_logger = logging.getLogger('pyroute2.netlink.rtnl.tcmsg.common')
+pyroute_tcmsg_logger.addHandler(logging.NullHandler())
 
 
 ###
@@ -201,11 +206,14 @@ def update_dyn_dns(cfg, firewall_ips):
 ###	Update Hurricane Electric DNS
 ###
 
-def update_he_dns_ip(cfg, auth, ip):
+def update_he_dns_ip(cfg, ip):
+
+	auth = (cfg['hostname'], cfg['password'])
 
 	try:
 		req = requests.get('https://dyn.dns.he.net/nic/update', auth=auth,
 				   params={ 'hostname': cfg['hostname'], 'myip': ip })
+		LOG.info('Updated DNS for %s', ip)
 	except Exception as e:
 		LOG.error('DNS update error: {0}\n'.format(unicode(e)))
 		return
@@ -222,12 +230,49 @@ def update_he_dns(cfg, firewall_ips):
 		LOG.warning('No IP addresses\n')
 		return
 
-	auth = (cfg['hostname'], cfg['password'])
-
 	if firewall_ips[4] is not None:
 		update_he_dns_ip(cfg, auth, firewall_ips[4])
 	if firewall_ips[6] is not None:
 		update_he_dns_ip(cfg, auth, firewall_ips[6])
+
+
+###
+###	Update public IPv6 address
+###
+
+def update_host_addr(cfg, prefix):
+
+	new_addr = prefix.ip | cfg['host_addr']
+	addr_present = False
+
+	with pyroute2.IPRoute() as ipr:
+
+		int_idx = ipr.link_lookup(ifname=cfg['host_int'])
+		if len(int_idx) == 0:
+			LOG.warning('No such interface: %s', cfg['host_int'])
+			return
+		int_idx = int_idx[0]
+
+		for addr in ipr.get_addr(index=int_idx, family=socket.AF_INET6):
+			ip = netaddr.IPAddress(addr.get_attr('IFA_ADDRESS'), 6)
+			if ip.is_private():
+				LOG.debug('Not removing %s/%s from %s',
+					  str(ip), addr['prefixlen'], cfg['host_int'])
+				continue
+			if ip == new_addr and addr['prefixlen'] == 64:
+				LOG.info('%s/64 already present on %s', str(ip), cfg['host_int'])
+				addr_present = True
+				continue
+			ipr.addr('del', index=int_idx, address=str(ip), mask=addr['prefixlen'])
+			LOG.info('Removed %s/%s from %s', str(ip), addr['prefixlen'], cfg['host_int'])
+
+		if addr_present:
+			return
+
+		ipr.addr('add', index=int_idx, address=str(new_addr), mask=64)
+		LOG.info('Added %s/64 to %s', str(new_addr), cfg['host_int'])
+
+		update_he_dns_ip(cfg, new_addr)
 
 
 ###
@@ -330,7 +375,7 @@ def write_state_file(ips):
 		os.close(fd)
 
 	os.rename('/var/lib/denatc/state.new', '/var/lib/denatc/state')
-	
+
 
 ###
 ###	Do something!
@@ -340,25 +385,31 @@ try:
 
 	cfg = parse_config()
 	state_ips = read_state_file()
+	host_addr_unset = True
 
 	while True:
 
 		public_ips = get_firewall_ips(cfg)
 
-		if public_ips is not None and public_ips != state_ips:
+		if public_ips is not None:
 
-			LOG.info('Public IP(s) have changed')
-			LOG.info('... old: %s', state_ips)
-			LOG.info('... new: %s', public_ips)
-
-			update_he_dns(cfg, public_ips)
+			if host_addr_unset or public_ips['prefix'] != state_ips['prefix']:
+				update_host_addr(cfg, public_ips['prefix'])
+				host_addr_unset = False
 
 			if public_ips[4] != state_ips[4]:
 				update_sip_conf(public_ips)
 				reload_sip_conf()
+				update_he_dns_ip(cfg, public_ips[4])
 
-			write_state_file(public_ips)
-			state_ips = public_ips
+			if public_ips != state_ips:
+
+				LOG.info('Public IP(s) have changed')
+				LOG.info('... old: %s', state_ips)
+				LOG.info('... new: %s', public_ips)
+
+				write_state_file(public_ips)
+				state_ips = public_ips
 
 		time.sleep(60)
 

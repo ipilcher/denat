@@ -19,7 +19,8 @@ ip6_prefix() {
 	if [ ${new_ip6_prefix#*/} = 56 ] ; then
 
 	    # We have a usable prefix; (re-)create the iptables rules.
-	    local ASTERISK_ADDR=${new_ip6_prefix%00::/56}ff::2/128
+	    local ASTERISK_ADDR=${new_ip6_prefix%00::/56}ff::1/128
+	    /usr/sbin/ip6tables -A FWD-INET6-IN -d $ASTERISK_ADDR -p icmpv6 -j ACCEPT
 	    /usr/sbin/ip6tables -A FWD-INET6-IN -d $ASTERISK_ADDR -p tcp -m tcp --dport 80 -j ACCEPT
 	    /usr/sbin/ip6tables -A FWD-INET6-IN -d $ASTERISK_ADDR -p tcp -m tcp --dport 443 -j ACCEPT
 	    /usr/sbin/ip6tables -A FWD-INET6-IN -d $ASTERISK_ADDR -p tcp -m tcp --dport 32698 -j ACCEPT
