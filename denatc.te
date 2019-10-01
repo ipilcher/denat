@@ -4,12 +4,14 @@ require {
 	type asterisk_var_run_t;
 	type asterisk_etc_t;
 	type shell_exec_t;
+	type radvd_etc_t;
 	type http_port_t;
 	type net_conf_t;
 	type proc_net_t;
 	type asterisk_t;
 	type kernel_t;
 	type devlog_t;
+	type radvd_t;
 	type proc_t;
 	type cert_t;
 	type tmp_t;
@@ -74,6 +76,12 @@ allow denatc_t asterisk_t:unix_stream_socket { connectto };
 # Netlink route socket for managing IP address
 allow denatc_t self:netlink_route_socket { read write create setopt nlmsg_read nlmsg_write };
 allow denatc_t self:capability { net_admin };
+
+# radvd configuration
+allow radvd_t radvd_etc_t:lnk_file { read };
+allow radvd_t radvd_etc_t:dir { search };
+allow denatc_t radvd_etc_t:dir { search write add_name remove_name };
+allow denatc_t radvd_etc_t:file { open create write unlink rename };
 
 #
 #	dontaudit rules
