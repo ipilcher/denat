@@ -115,8 +115,14 @@ def parse_config():
 
 	routes = []
 	for i, a in cp.items('routes'):
-		routes.append((i, netaddr.IPAddress(a)))
+		if i == 'protocol':
+			cfg['protocol'] = int(a)
+		else:
+			routes.append((i, netaddr.IPAddress(a)))
 	cfg['routes'] = routes
+
+	cfg['radvd_conf'] = cp.get('radvd', 'config')
+	cfg['radvd_unit'] = cp.get('radvd', 'unit')
 
 	return cfg
 
@@ -400,15 +406,16 @@ def update_radvd_conf(ips):
 
 	conf = re.compile(r'^#@@#.*\n', re.MULTILINE).sub('', temp).replace('@@PREFIX@@', prefix)
 
+	new = cfg['radvd_conf'] + '.new'
 	try:
-		os.remove('/etc/radvd/radvd.conf.new')
+		os.remove(new)
 	except EnvironmentError as e:
 		if e.errno != errno.ENOENT:
 			raise
 
 	umask = os.umask(0)
 	try:
-		fd = os.open('/etc/radvd/radvd.conf.new', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+		fd = os.open(new, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
 	finally:
 		os.umask(umask)
 
@@ -424,7 +431,7 @@ def update_radvd_conf(ips):
 			 '#\n')
 		fh.write(conf)
 
-	os.rename('/etc/radvd/radvd.conf.new', '/etc/radvd/radvd.conf')
+	os.rename(new, cfg['radvd_conf'])
 
 
 ###
