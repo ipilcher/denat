@@ -1,0 +1,13 @@
+[Unit]
+Description=Router advertisement daemon for delegated IPv6 addresses
+After=network.target
+
+[Service]
+EnvironmentFile=/etc/sysconfig/radvd-dynamic
+ExecStart=/usr/sbin/radvd -C /etc/radvd/radvd-dynamic.conf -p /var/run/radvd/radvd-dynamic.pid $OPTIONS
+Type=forking
+PIDFile=/var/run/radvd/radvd-dynamic.pid
+ExecReload=/bin/kill -HUP $MAINPID
+
+[Install]
+WantedBy=multi-user.target
