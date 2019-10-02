@@ -496,32 +496,45 @@ try:
 
 	cfg = parse_config()
 	state_ips = read_state_file()
+	previous_ips = None
 	host_addr_unset = True
 
 	while True:
 
-		public_ips = get_firewall_ips(cfg)
+		current_ips = get_firewall_ips(cfg)
 
-		if public_ips is not None:
+		if current_ips is not None:
 
-			if host_addr_unset or public_ips['prefix'] != state_ips['prefix']:
-				update_local_net(cfg, public_ips['prefix'])
-				update_radvd_conf(public_ips)
-				host_addr_unset = False
+                        if current_ips != state_ips and current_ips != previous_ips:
+                                LOG.info('Public IP(s) have changed')
+                                LOG.info('... old: %s', state_ips)
+                                LOG.info('... new: %s', current_ips)
+				LOG.debug('... previous: %s', previous_ips)
 
-			if public_ips[4] != state_ips[4]:
-				update_sip_conf(public_ips)
-				reload_sip_conf()
-				update_he_dns_ip(cfg, public_ips[4])
+			previous_ips = current_ips.copy()
 
-			if public_ips != state_ips:
+			if host_addr_unset or current_ips['prefix'] != state_ips['prefix']:
+				if current_ips['prefix'] is not None:
+					update_local_net(cfg, current_ips['prefix'])
+					update_radvd_conf(current_ips)
+					host_addr_unset = False
 
-				LOG.info('Public IP(s) have changed')
-				LOG.info('... old: %s', state_ips)
-				LOG.info('... new: %s', public_ips)
+			if current_ips[4] != state_ips[4]:
+				if current_ips[4] is not None:
+					update_sip_conf(current_ips)
+					reload_sip_conf()
+					update_he_dns_ip(cfg, current_ips[4])
 
-				write_state_file(public_ips)
-				state_ips = public_ips
+			if current_ips[4] is None:
+				current_ips[4] = state_ips[4]
+			if current_ips[6] is None:
+				current_ips[6] = state_ips[6]
+			if current_ips['prefix'] is None:
+				current_ips['prefix'] = state_ips['prefix']
+
+			if current_ips != state_ips:
+				write_state_file(current_ips)
+				state_ips = current_ips
 
 		time.sleep(60)
 
