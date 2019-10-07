@@ -1,6 +1,7 @@
 policy_module(denatc, 0.0.2)
 
 require {
+	class dbus all_dbus_perms;
 	type asterisk_var_run_t;
 	type asterisk_etc_t;
 	type shell_exec_t;
@@ -15,6 +16,11 @@ require {
 	type proc_t;
 	type cert_t;
 	type tmp_t;
+	type system_dbusd_var_run_t;
+	type system_dbusd_t;
+	type passwd_file_t;
+	type init_t;
+	type systemd_unit_file_t;
 };
 
 type denatc_t;
@@ -22,11 +28,13 @@ type denat_port_t;
 type denatc_etc_t;
 type denatc_exec_t;
 type denatc_var_lib_t;
+type radvd_dynamic_unit_file_t;
 
 init_daemon_domain(denatc_t, denatc_exec_t)
 files_type(denatc_etc_t)
 files_type(denatc_var_lib_t)
 corenet_port(denat_port_t)
+systemd_unit_file(radvd_dynamic_unit_file_t)
 
 # syslog
 allow denatc_t self:unix_dgram_socket { create connect write };
@@ -73,7 +81,7 @@ allow denatc_t asterisk_etc_t:file { read open getattr create write unlink renam
 allow denatc_t asterisk_var_run_t:dir { search };
 allow denatc_t asterisk_t:unix_stream_socket { connectto };
 
-# Netlink route socket for managing IP address
+# Netlink route socket for managing IP address & routes
 allow denatc_t self:netlink_route_socket { read write create setopt nlmsg_read nlmsg_write };
 allow denatc_t self:capability { net_admin };
 
@@ -82,6 +90,21 @@ allow radvd_t radvd_etc_t:lnk_file { read };
 allow radvd_t radvd_etc_t:dir { search };
 allow denatc_t radvd_etc_t:dir { search write add_name remove_name };
 allow denatc_t radvd_etc_t:file { open create write unlink rename };
+
+# Restart radvd (via D-BUS)
+allow denatc_t system_dbusd_var_run_t:dir { search };
+allow denatc_t system_dbusd_t:unix_stream_socket { connectto };
+allow denatc_t system_dbusd_t:dbus { send_msg };
+allow denatc_t init_t:dbus { send_msg };
+allow init_t denatc_t:dbus { send_msg };
+allow denatc_t systemd_unit_file_t:service { reload };
+
+# Lookup non-root user's UID & GID
+allow denatc_t passwd_file_t:file { read open getattr };
+
+# Set capabilities & drop root
+allow denatc_t self:process { setcap };
+allow denatc_t self:capability { setgid setuid };
 
 #
 #	dontaudit rules
