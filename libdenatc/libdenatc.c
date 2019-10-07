@@ -76,7 +76,7 @@ PyMODINIT_FUNC initlibdenatc(void)
 
 /*
  * Set an exception (a subclass of EnvironmentError) with an errno value
- * and a custom message.
+ * and a custom message.  Also calls cap_free(state), if state is non-NULL.
  */
 static PyObject *mkerr(const PyObject *const class, const char *const format,
 		       cap_t state)
