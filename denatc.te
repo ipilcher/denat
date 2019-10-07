@@ -116,3 +116,4 @@ dontaudit denatc_t denatc_var_lib_t:file { ioctl };
 dontaudit denatc_t self:udp_socket { getattr };
 dontaudit denatc_t self:netlink_route_socket { bind };
 dontaudit denatc_t proc_net_t:file { read };
+dontaudit denatc_t init_t:system { status };
