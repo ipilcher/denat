@@ -473,7 +473,11 @@ def update_radvd_conf(ips):
 ###	Restart radvd
 ###
 
+def restart_radvd():
 
+	systemd1 = sysbus.get_object('org.freedesktop.systemd1', '/org/freedesktop/systemd1')
+	manager = dbus.Interface(systemd1, 'org.freedesktop.systemd1.Manager')
+	job = manager.ReloadOrTryRestartUnit(CFG['radvd_unit'], 'fail')
 
 
 ###
@@ -561,6 +565,7 @@ try:
 				if current_ips['prefix'] is not None:
 					update_local_net(current_ips['prefix'])
 					update_radvd_conf(current_ips)
+					restart_radvd()
 					host_addr_unset = False
 
 			if current_ips[4] != state_ips[4]:
