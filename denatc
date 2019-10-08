@@ -475,7 +475,7 @@ def update_radvd_conf(ips):
 
 def restart_radvd():
 
-	systemd1 = sysbus.get_object('org.freedesktop.systemd1', '/org/freedesktop/systemd1')
+	systemd1 = SYSBUS.get_object('org.freedesktop.systemd1', '/org/freedesktop/systemd1')
 	manager = dbus.Interface(systemd1, 'org.freedesktop.systemd1.Manager')
 	job = manager.ReloadOrTryRestartUnit(CFG['radvd_unit'], 'fail')
 
