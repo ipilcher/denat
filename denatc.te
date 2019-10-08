@@ -96,6 +96,7 @@ allow denatc_t system_dbusd_var_run_t:dir { search };
 allow denatc_t system_dbusd_t:unix_stream_socket { connectto };
 allow denatc_t system_dbusd_t:dbus { send_msg };
 allow denatc_t init_t:dbus { send_msg };
+allow denatc_t init_t:system { status };
 allow init_t denatc_t:dbus { send_msg };
 allow denatc_t radvd_dynamic_unit_file_t:service { reload };
 
@@ -116,4 +117,4 @@ dontaudit denatc_t denatc_var_lib_t:file { ioctl };
 dontaudit denatc_t self:udp_socket { getattr };
 dontaudit denatc_t self:netlink_route_socket { bind };
 dontaudit denatc_t proc_net_t:file { read };
-dontaudit denatc_t init_t:system { status };
+#dontaudit denatc_t init_t:system { status };
