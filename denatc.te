@@ -89,7 +89,7 @@ allow denatc_t self:capability { net_admin };
 allow radvd_t radvd_etc_t:lnk_file { read };
 allow radvd_t radvd_etc_t:dir { search };
 allow denatc_t radvd_etc_t:dir { search write add_name remove_name };
-allow denatc_t radvd_etc_t:file { open create write unlink rename };
+allow denatc_t radvd_etc_t:file { open create write unlink rename getattr };
 
 # Restart radvd (via D-BUS)
 allow denatc_t system_dbusd_var_run_t:dir { search };
