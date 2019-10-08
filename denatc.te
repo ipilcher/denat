@@ -97,7 +97,7 @@ allow denatc_t system_dbusd_t:unix_stream_socket { connectto };
 allow denatc_t system_dbusd_t:dbus { send_msg };
 allow denatc_t init_t:dbus { send_msg };
 allow init_t denatc_t:dbus { send_msg };
-allow denatc_t systemd_unit_file_t:service { reload };
+allow denatc_t radvd_dynamic_unit_file_t:service { reload };
 
 # Lookup non-root user's UID & GID
 allow denatc_t passwd_file_t:file { read open getattr };
