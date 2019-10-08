@@ -1,45 +1,79 @@
 #!/usr/bin/python
 
+###
+###	"Global" variables
+###
+
+LOG = None
+SYSBUS = None
+ARGS = None
+CFG = {}
+
+
+###
+###	Initial setup (as root) - parse command line, get D-Bus system bus
+###	reference, and drop root privileges (except CAP_NET_ADMIN)
+###
+
+import argparse
+import dbus
+import libdenatc
+
+def root_init():
+
+	parser = argparse.ArgumentParser(
+			description='Dynamic network reconfiguration client'
+		)
+
+	parser.add_argument('-f', '--foreground', action='store_true',
+			    help='Log to stderr, not syslog')
+	parser.add_argument('-d', '--debug', action='store_true',
+			    help='Log debug messages')
+	parser.add_argument('-u', '--user',
+			    help='Non-root user (defaults to denatc)')
+
+	ARGS = parser.parse_args()
+
+	SYSBUS = dbus.SystemBus()
+
+	passwd = pwd.getpwnam('denatc' if ARGS.user is None else ARGS.user)
+	libdenatc.drop_root(passwd.pw_uid, passwd.pw_gid)
+
+# Drop root as early as possible (before importing any other modules)
+root_init()
+
+
+###
+###	Non-root setup - import remaining modules and set up logging
+###
+
 import ConfigParser
-import requests
-import pyroute2
-import netaddr
-import logging
-import socket
-import string
 import errno
-import time
-import stat
-import sys
-import re
+import logging
+import netaddr
 import os
+import pwd
+import pyroute2
+import re
+import requests
+import socket
+import stat
+import string
+import sys
+import time
 
 from logging.handlers import SysLogHandler
 
-
-###
-###	 Intial setup
-###
-
-debug = False
-foreground = False
-
-for arg in sys.argv[1:]:
-	if arg == '-d' or arg == '--debug':
-		debug = True
-	elif arg == '-f' or arg == '--foreground':
-		foreground = True
-	else:
-		sys.stderr.write('{0}: Unknown option: {1}\n'.format(sys.argv[0], arg))
-
 LOG = logging.getLogger(__name__)
-LOG.setLevel(logging.DEBUG if debug else logging.INFO)
+LOG.setLevel(logging.DEBUG if args.debug else logging.INFO)
 
-if foreground:
+if args.foreground:
 	LOG.addHandler(logging.StreamHandler())
 else:
 	lh = SysLogHandler(address = '/dev/log', facility = SysLogHandler.LOG_DAEMON)
 	LOG.addHandler(lh)
+
+LOG
 
 # Suppress pyroute2 warning about unreadable /proc/net/psched
 pyroute_tcmsg_logger = logging.getLogger('pyroute2.netlink.rtnl.tcmsg.common')
@@ -85,46 +119,42 @@ def parse_config():
 	cp = ConfigParser.RawConfigParser()
 	cp.read(['/etc/denatc/denatc.conf'])
 
-	cfg = {}
-
 	if cp.has_option('firewall', 'host'):
-		cfg['host'] = cp.get('firewall', 'host')
+		CFG['host'] = cp.get('firewall', 'host')
 	else:
-		cfg['host'] = get_ipv4_gateway()
-		if cfg['host'] is None:
-			cfg['host'] = get_ipv6_gateway()
+		CFG['host'] = get_ipv4_gateway()
+		if CFG['host'] is None:
+			CFG['host'] = get_ipv6_gateway()
 
-	cfg['port'] = 9797
+	CFG['port'] = 9797
 	if cp.has_option('firewall', 'port'):
-		cfg['port'] = cp.get('firewall', 'port')
+		CFG['port'] = cp.get('firewall', 'port')
 
-	cfg['interface'] = None
+	CFG['interface'] = None
 	if cp.has_option('firewall', 'interface'):
-		cfg['interface'] = cp.get('firewall', 'interface')
+		CFG['interface'] = cp.get('firewall', 'interface')
 
-	cfg['username'] = cp.get('dns', 'username')
-	cfg['password'] = cp.get('dns', 'password')
+	CFG['username'] = cp.get('dns', 'username')
+	CFG['password'] = cp.get('dns', 'password')
 
 	if cp.has_option('dns', 'hostname'):
-		cfg['hostname'] = cp.get('dns', 'hostname')
+		CFG['hostname'] = cp.get('dns', 'hostname')
 	else:
-		cfg['hostname'] = socket.getfqdn(socket.gethostname()).partition('.')[2]
+		CFG['hostname'] = socket.getfqdn(socket.gethostname()).partition('.')[2]
 
-	cfg['host_addr'] = netaddr.IPAddress(cp.get('address', 'host'), 6)
-	cfg['host_int'] = cp.get('address', 'interface')
+	CFG['host_addr'] = netaddr.IPAddress(cp.get('address', 'host'), 6)
+	CFG['host_int'] = cp.get('address', 'interface')
 
 	routes = []
 	for i, a in cp.items('routes'):
 		if i == 'protocol':
-			cfg['protocol'] = int(a)
+			CFG['protocol'] = int(a)
 		else:
 			routes.append((i, netaddr.IPAddress(a)))
-	cfg['routes'] = routes
+	CFG['routes'] = routes
 
-	cfg['radvd_conf'] = cp.get('radvd', 'config')
-	cfg['radvd_unit'] = cp.get('radvd', 'unit')
-
-	return cfg
+	CFG['radvd_conf'] = cp.get('radvd', 'config')
+	CFG['radvd_unit'] = cp.get('radvd', 'unit')
 
 
 ###
@@ -142,11 +172,11 @@ def is_public_ip(ip):
                         or ip.is_ipv4_compat()  )
 
 
-def get_firewall_ips(cfg):
+def get_firewall_ips():
 
 	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	try:
-		s.connect((cfg['host'], cfg['port']))
+		s.connect((CFG['host'], CFG['port']))
 		lines = s.recv(1024).splitlines()
 	except Exception as e:
 		LOG.error(unicode(e))
@@ -168,7 +198,7 @@ def get_firewall_ips(cfg):
 				LOG.warning('Ignoring prefix: %s', str(prefix))
 			continue
 
-		if fields[0] != cfg['interface']:
+		if fields[0] != CFG['interface']:
 			continue;
 
 		ip = netaddr.IPAddress(fields[1])
@@ -188,7 +218,7 @@ def get_firewall_ips(cfg):
 ###	Update dyn.com DNS - unused
 ###
 
-def update_dyn_dns(cfg, firewall_ips):
+def update_dyn_dns(firewall_ips):
 
 	dns_ips = []
 	if firewall_ips[4] is not None:
@@ -201,8 +231,8 @@ def update_dyn_dns(cfg, firewall_ips):
 
 	try:
 		req = requests.get('http://members.dyndns.org/v3/update',
-				   auth=(cfg['username'], cfg['password']),
-				   params={ 'hostname': cfg['hostname'], 'myip': dns_ips })
+				   auth=(CFG['username'], CFG['password']),
+				   params={ 'hostname': CFG['hostname'], 'myip': dns_ips })
 	except Exception as e:
 		LOG.error('DNS update error: %s', unicode(e))
 		return
@@ -217,13 +247,13 @@ def update_dyn_dns(cfg, firewall_ips):
 ###	Update Hurricane Electric DNS
 ###
 
-def update_he_dns_ip(cfg, ip):
+def update_he_dns_ip(ip):
 
-	auth = (cfg['hostname'], cfg['password'])
+	auth = (CFG['hostname'], CFG['password'])
 
 	try:
 		req = requests.get('https://dyn.dns.he.net/nic/update', auth=auth,
-				   params={ 'hostname': cfg['hostname'], 'myip': ip })
+				   params={ 'hostname': CFG['hostname'], 'myip': ip })
 		LOG.info('Updated DNS for %s', ip)
 	except Exception as e:
 		LOG.error('DNS update error: {0}\n'.format(unicode(e)))
@@ -235,16 +265,16 @@ def update_he_dns_ip(cfg, ip):
 				  req.status_code, req.reason, req.text))
 
 
-def update_he_dns(cfg, firewall_ips):
+def update_he_dns(firewall_ips):
 
 	if len(firewall_ips) == 0:
 		LOG.warning('No IP addresses\n')
 		return
 
 	if firewall_ips[4] is not None:
-		update_he_dns_ip(cfg, auth, firewall_ips[4])
+		update_he_dns_ip(CFG, auth, firewall_ips[4])
 	if firewall_ips[6] is not None:
-		update_he_dns_ip(cfg, auth, firewall_ips[6])
+		update_he_dns_ip(CFG, auth, firewall_ips[6])
 
 
 ###
@@ -261,36 +291,36 @@ def interface_index(interface, ipr):
 		return list[0]
 
 
-def update_host_addr(cfg, prefix, ipr):
+def update_host_addr(prefix, ipr):
 
-	new_addr = prefix.ip | cfg['host_addr']
+	new_addr = prefix.ip | CFG['host_addr']
 	addr_present = False
 
-	int_idx = interface_index(cfg['host_int'], ipr)
+	int_idx = interface_index(CFG['host_int'], ipr)
 	if int_idx is None:
-		LOG.warning('Cannot assign address to %s', cfg['host_int'])
+		LOG.warning('Cannot assign address to %s', CFG['host_int'])
 		return
 
 	for addr in ipr.get_addr(index=int_idx, family=socket.AF_INET6):
 		ip = netaddr.IPAddress(addr.get_attr('IFA_ADDRESS'), 6)
 		if ip.is_private():
 			LOG.debug('Not removing %s/%s from %s',
-				  str(ip), addr['prefixlen'], cfg['host_int'])
+				  str(ip), addr['prefixlen'], CFG['host_int'])
 			continue
 		if ip == new_addr and addr['prefixlen'] == 64:
-			LOG.info('%s/64 already present on %s', str(ip), cfg['host_int'])
+			LOG.info('%s/64 already present on %s', str(ip), CFG['host_int'])
 			addr_present = True
 			continue
 		ipr.addr('del', index=int_idx, address=str(ip), mask=addr['prefixlen'])
-		LOG.info('Removed %s/%s from %s', str(ip), addr['prefixlen'], cfg['host_int'])
+		LOG.info('Removed %s/%s from %s', str(ip), addr['prefixlen'], CFG['host_int'])
 
 	if addr_present:
 		return
 
 	ipr.addr('add', index=int_idx, address=str(new_addr), mask=64)
-	LOG.info('Added %s/64 to %s', str(new_addr), cfg['host_int'])
+	LOG.info('Added %s/64 to %s', str(new_addr), CFG['host_int'])
 
-	update_he_dns_ip(cfg, new_addr)
+	update_he_dns_ip(new_addr)
 
 
 def is_cfg_route(nlroute, cfg_routes):
@@ -309,11 +339,11 @@ def is_cfg_route(nlroute, cfg_routes):
 	return False
 
 
-def update_routes(cfg, prefix, ipr):
+def update_routes(prefix, ipr):
 
 	cfg_routes = []
 
-	for interface, addr in cfg['routes']:
+	for interface, addr in CFG['routes']:
 		ifindex = interface_index(interface, ipr)
 		if ifindex is None:
 			LOG.warning('Cannot add route via %s', interface)
@@ -328,21 +358,23 @@ def update_routes(cfg, prefix, ipr):
 		if is_cfg_route(nlroute, cfg_routes):
 			continue;
 		ipr.route('del', dst=nlroute.get_attr('RTA_DST'), dst_len=nlroute['dst_len'])
-		LOG.info('Removed route %s/%s via %s', nlroute.get_attr('RTA_DST'), nlroute['dst_len'],
+		LOG.info('Removed route %s/%s via %s',
+			 nlroute.get_attr('RTA_DST'), nlroute['dst_len'],
 			 ipr.get_links(nlroute.get_attr('RTA_OIF'))[0].get_attr('IFLA_IFNAME'))
 
 	for route in cfg_routes:
 		if route['found']:
 			continue
-		ipr.route('add', dst=str(route['dest']), dst_len=64, oif=route['ifindex'], proto=255)
+		ipr.route('add', dst=str(route['dest']), dst_len=64, oif=route['ifindex'],
+		          proto=255)
 		LOG.info('Added route %s/64 via %s', route['dest'], route['ifname'])
 
 
-def update_local_net(cfg, prefix):
+def update_local_net(prefix):
 
 	with pyroute2.IPRoute() as ipr:
-		update_host_addr(cfg, prefix, ipr)
-		update_routes(cfg, prefix, ipr)
+		update_host_addr(prefix, ipr)
+		update_routes(prefix, ipr)
 
 
 ###
@@ -406,7 +438,7 @@ def update_radvd_conf(ips):
 
 	conf = re.compile(r'^#@@#.*\n', re.MULTILINE).sub('', temp).replace('@@PREFIX@@', prefix)
 
-	new = cfg['radvd_conf'] + '.new'
+	new = CFG['radvd_conf'] + '.new'
 	try:
 		os.remove(new)
 	except EnvironmentError as e:
@@ -431,7 +463,14 @@ def update_radvd_conf(ips):
 			 '#\n')
 		fh.write(conf)
 
-	os.rename(new, cfg['radvd_conf'])
+	os.rename(new, CFG['radvd_conf'])
+
+
+###
+###	Restart radvd
+###
+
+
 
 
 ###
@@ -458,12 +497,14 @@ def read_state_file():
 			if state_ips['prefix'] is None:
 				state_ips['prefix'] = net
 			else:
-				LOG.warning('Ignoring extra IPv6 prefix in state file: %s', str(net))
+				LOG.warning('Ignoring extra IPv6 prefix in state file: %s',
+					    str(net))
 		else:
 			if state_ips[net.version] is None:
 				state_ips[net.version] = net.ip
 			else:
-				LOG.warning('Ignoring extra IP address in state file: %s', net.ip)
+				LOG.warning('Ignoring extra IP address in state file: %s',
+					    net.ip)
 
 	return state_ips
 
@@ -494,14 +535,14 @@ def write_state_file(ips):
 
 try:
 
-	cfg = parse_config()
+	parse_config()
 	state_ips = read_state_file()
 	previous_ips = None
 	host_addr_unset = True
 
 	while True:
 
-		current_ips = get_firewall_ips(cfg)
+		current_ips = get_firewall_ips()
 
 		if current_ips is not None:
 
@@ -515,7 +556,7 @@ try:
 
 			if host_addr_unset or current_ips['prefix'] != state_ips['prefix']:
 				if current_ips['prefix'] is not None:
-					update_local_net(cfg, current_ips['prefix'])
+					update_local_net(current_ips['prefix'])
 					update_radvd_conf(current_ips)
 					host_addr_unset = False
 
@@ -523,7 +564,7 @@ try:
 				if current_ips[4] is not None:
 					update_sip_conf(current_ips)
 					reload_sip_conf()
-					update_he_dns_ip(cfg, current_ips[4])
+					update_he_dns_ip(current_ips[4])
 
 			if current_ips[4] is None:
 				current_ips[4] = state_ips[4]
