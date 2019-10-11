@@ -1,4 +1,4 @@
-policy_module(denatc, 0.0.2)
+policy_module(denatc, 0.0.3)
 
 require {
 	class dbus all_dbus_perms;
@@ -98,7 +98,7 @@ allow denatc_t system_dbusd_t:dbus { send_msg };
 allow denatc_t init_t:dbus { send_msg };
 allow denatc_t init_t:system { status };
 allow init_t denatc_t:dbus { send_msg };
-allow denatc_t radvd_dynamic_unit_file_t:service { reload };
+allow denatc_t radvd_dynamic_unit_file_t:service { reload start };
 
 # Lookup non-root user's UID & GID
 allow denatc_t passwd_file_t:file { read open getattr };
