@@ -28,13 +28,13 @@ type denat_port_t;
 type denatc_etc_t;
 type denatc_exec_t;
 type denatc_var_lib_t;
-type radvd_dynamic_unit_file_t;
+type radvd_unit_file_t;
 
 init_daemon_domain(denatc_t, denatc_exec_t)
 files_type(denatc_etc_t)
 files_type(denatc_var_lib_t)
 corenet_port(denat_port_t)
-systemd_unit_file(radvd_dynamic_unit_file_t)
+systemd_unit_file(radvd_unit_file_t)
 
 # syslog
 allow denatc_t self:unix_dgram_socket { create connect write };
@@ -98,7 +98,7 @@ allow denatc_t system_dbusd_t:dbus { send_msg };
 allow denatc_t init_t:dbus { send_msg };
 allow denatc_t init_t:system { status };
 allow init_t denatc_t:dbus { send_msg };
-allow denatc_t radvd_dynamic_unit_file_t:service { reload };
+allow denatc_t radvd_unit_file_t:service { reload };
 
 # Lookup non-root user's UID & GID
 allow denatc_t passwd_file_t:file { read open getattr };
