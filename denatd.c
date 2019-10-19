@@ -31,11 +31,13 @@
 #include <stdio.h>
 #include <errno.h>
 #include <ctype.h>
+#include <time.h>
+
+#include <libmnl/libmnl.h>
+#include <linux/rtnetlink.h>
 
 #define EXEC_NAME	"denatd"
 #define OUTBUF_SIZE	1000
-
-static const char prefix_file[] = "/run/dhclient6-prefix";
 
 /*
  *      Command-line options
@@ -433,43 +435,145 @@ static void get_ips(void)
                 warn("Output truncated\n");
 }
 
-static void get_prefix(void)
+struct prefix { const struct in6_addr *dst; uint8_t len; };
+
+static int attr_cb(const struct nlattr *const attr, void *const data)
 {
-	char buf[100];
-	ssize_t size;
-	int fd;
+	const struct in6_addr **const addr = data;
 
-	if ((fd = open(prefix_file, O_RDONLY)) < 0) {
-		if (errno == ENOENT) {
-			info("Prefix file (%s) missing\n", prefix_file);
-			return;
-		}
-		error("%s: %m\n", prefix_file);
+	if (mnl_attr_get_type(attr) != RTA_DST)
+		return MNL_CB_OK;
+
+	if (mnl_attr_validate2(attr, MNL_TYPE_BINARY, sizeof **addr) < 0) {
+		error("mnl_attr_validate2: %m\n");
 		abort();
 	}
 
-	if ((size = read(fd, buf, sizeof buf)) < 0) {
-		error("%s: %m\n", prefix_file);
+	*addr = mnl_attr_get_payload(attr);
+
+	return MNL_CB_STOP;
+}
+
+static int msg_cb(const struct nlmsghdr *const nlh, void *const data)
+{
+	struct prefix *const prefix = data;
+	const struct rtmsg *rm;
+	struct in6_addr *addr;
+
+	rm = mnl_nlmsg_get_payload(nlh);
+
+	if (rm->rtm_protocol != rtproto)
+		return MNL_CB_OK;
+
+	addr = NULL;
+
+	if (mnl_attr_parse(nlh, sizeof *rm, attr_cb, &addr) < 0) {
+		error("mnl_attr_parse: %m\n");
 		abort();
 	}
 
-	if (size > 0) {
-		--size;
-		if (buf[size] != '\n') {
-			warn("Prefix file (%s) not newline terminated\n",
-			     prefix_file);
-		}
-		else {
-			buf[size] = '\0';
-			if (bprintf("__PREFIX__ %s\n", buf))
-				warn("Output truncated\n");
-		}
+	if (addr == NULL) {
+		warn("Ignoring route with no destination\n");
+		return MNL_CB_OK;
 	}
 
-	if (close(fd) < 0) {
-		error("%s: %m\n", prefix_file);
+	switch (rm->rtm_dst_len) {
+
+		case 48:
+		case 52:
+		case 56:
+			break;
+
+		default:
+			warn("Ignoring route with unsupported prefix length "
+			      "(%" PRIu8 ")\n", rm->rtm_dst_len);
+			return MNL_CB_OK;
+	}
+
+	if (prefix->dst != NULL) {
+		warn("Multiple valid routes found; ignoring all\n");
+		prefix->dst = NULL;
+		prefix->len = 0;
+		return MNL_CB_STOP;
+	}
+
+	prefix->dst = addr;
+	prefix->len = rm->rtm_dst_len;
+
+	return MNL_CB_OK;
+}
+
+static void get_prefix(struct mnl_socket *const mnl)
+{
+	uint8_t msg[MNL_SOCKET_BUFFER_SIZE];
+	char buf[INET6_ADDRSTRLEN];
+	struct prefix prefix;
+	struct nlmsghdr *nlh;
+	struct rtmsg *rtm;
+	unsigned portid;
+	ssize_t ret;
+	time_t seq;
+
+	nlh = mnl_nlmsg_put_header(msg);
+	nlh->nlmsg_type = RTM_GETROUTE;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nlh->nlmsg_seq = time(&seq);
+	rtm = mnl_nlmsg_put_extra_header(nlh, sizeof *rtm);
+	rtm->rtm_family = AF_INET6;
+	portid = mnl_socket_get_portid(mnl);
+
+	if (mnl_socket_sendto(mnl, nlh, nlh->nlmsg_len) < 0) {
+		error("mnl_socket_sendto: %m\n");
 		abort();
 	}
+
+	prefix.dst = NULL;
+	prefix.len = 0;
+
+	do {
+		if ((ret = mnl_socket_recvfrom(mnl, msg, sizeof msg)) < 0) {
+			error("mnl_socket_recvfrom: %m\n");
+			abort();
+		}
+
+		if (ret == 0)
+			break;
+
+		ret = mnl_cb_run(msg, ret, seq, portid, msg_cb, &prefix);
+		if (ret < 0) {
+			error("mnl_cb_run: %m\n");
+			abort();
+		}
+	}
+	while (ret > 0);
+
+	if (prefix.dst == NULL)
+		return;
+
+	if (inet_ntop(AF_INET6, prefix.dst, buf, sizeof buf) == NULL) {
+		error("inet_ntop: %m\n");
+		abort();
+	}
+
+	if (bprintf("__PREFIX__ %s/%" PRIu8 "\n", buf, prefix.len))
+		warn("Output truncated\n");
+}
+
+static struct mnl_socket *get_netlink(void)
+{
+	struct mnl_socket *mnl;
+
+	if ((mnl = mnl_socket_open(NETLINK_ROUTE)) == NULL) {
+		error("mnl_socket_open: %m\n");
+		abort();
+	}
+
+	if (mnl_socket_bind(mnl, 0, MNL_SOCKET_AUTOPID) < 0) {
+		error("mnl_socket_bind: %m\n");
+		abort();
+	}
+
+	return mnl;
 }
 
 static int get_socket(void)
@@ -551,6 +655,7 @@ static void log_conn(union sockaddr_inX *addr)
 int main(int argc, char *argv[])
 {
 	union sockaddr_inX sockaddr;
+	struct mnl_socket *mnl;
 	int listen_fd, sockfd;
 	socklen_t addrlen;
 
@@ -559,6 +664,7 @@ int main(int argc, char *argv[])
 		openlog(EXEC_NAME, LOG_PID, LOG_USER);
 
 	listen_fd = get_socket();
+	mnl = get_netlink();
 
 	while (1) {
 
@@ -575,7 +681,7 @@ int main(int argc, char *argv[])
 			log_conn(&sockaddr);
 
 		get_ips();
-		get_prefix();
+		get_prefix(mnl);
 
 		if (write(sockfd, outbuf, cursor) != cursor)
 			warn("write: %m\n");
