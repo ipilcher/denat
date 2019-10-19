@@ -1,50 +1,54 @@
-padword() {
-    local WORD=$1
-    while [ $(expr length "$WORD") -lt 4 ] ; do
-	WORD=0${WORD}
-    done
-    echo $WORD
-}
+###
+###	dhclient exit hook scripts are sourced by the main dhclient script
+###	(/usr/sbin/dhclient-script), so we can't "exit" from the hook script
+###	or mess with the global state.  We wrap everything in a function, so
+###	that we can keep it all local.
+###
 
-v6merge() {
+handle_delegated_ipv6_prefix() {
 
-    local PREFIX=$1
-    local HOST=$2
+    #
+    # The "WAN" interface through which dhclient receives the delegated prefix.
+    # Events on other interfaces will be ignored by this hook.
+    #
+    local WAN_INTERFACE=bond0.256
 
-    PREFIXLEN=${PREFIX#*/}
+    #
+    # The "router" to which all traffic destined for the delegated prefix will
+    # be sent.  This should be a stable address (usually a ULA).
+    #
+    local LAN_ROUTER=fd00:dcaf:bad:ff::1
 
-    if [ $PREFIXLEN -gt 56 -o $PREFIXLEN -lt 48 ] ; then
-	/usr/bin/logger "ip6_prefix: ignoring invalid prefix: $PREFIX"
-	return 1
-    fi
+    #
+    # The routing protocol number used to "tag" routes created by this hook.
+    #
+    local DENAT_RTPROTO=255
 
-    if [ $((PREFIXLEN%4)) != 0 ] ; then
-	/usr/bin/logger "ip6_prefix: ignoring invalid prefix: $PREFIX"
-	return 1
-    fi
+    #
+    # The ip6tables chain used to allow incoming traffic.
+    #
+    local IP6TABLES_CHAIN=FWD-INET6-IN
 
-    local W1=${PREFIX%%:*}
-    W1=$(padword $W1)
+    #
+    # An associative array that describes allowed incoming connections.  Keys
+    # are the local portion of the host or network address (which will be
+    # combined with the delegated prefix); values are lists of port (or port
+    # range) definitions.  Incoming ICMPv6 is implicitly allowed for all listed
+    # addresses.
+    #
+    # NOTE: Although this script handles /48, /52, or /56 delegated prefixes,
+    #	    "local" addresses must be compatible with a /56 prefix.  Thus, local
+    #	    addresses are the lower 72 bits of the "merged" address.
+    #
+    declare -A ALLOWED_IN
+    ALLOWED_IN['ff::1/128']='80/tcp 443/tcp 32698/tcp 32789:32790/tcp'
+    ALLOWED_IN['fa::/64']='5060/udp'
 
-    local W2=${PREFIX#*:}
-    W2=${W2%%:*}
-    W2=$(padword $W2)
+    ###
+    ###	    END OF CONFIGURATION
+    ###
 
-    local W3=${PREFIX#*:*:}
-    W3=${W3%%:*}
-    W3=$(padword $W3)
-
-    local W4=${PREFIX#*:*:*:}
-    W4=${W4%%:*}
-    W4=$(padword $W4)
-    W4=${W4%??}
-
-    echo "${W1}:${W2}:${W3}:${W4}${HOST}/128"
-}
-
-ip6_prefix() {
-
-    [ "$interface" = bond0.256 ] || return
+    [ "$interface" = $WAN_INTERFACE ] || return
     [ -z "$old_ip6_prefix" -a -z "$new_ip6_prefix" ] && return
 
     # We always write a new state file (which will contain only a blank line if
@@ -52,31 +56,71 @@ ip6_prefix() {
     echo "$new_ip6_prefix" > /run/dhclient6-prefix.new
     mv /run/dhclient6-prefix.new /run/dhclient6-prefix
 
-    # Flush the iptables rules; we'll (re-)create them if we have a valid new
+    # Flush the ip6tables rules; we'll (re-)create them if we have a valid new
     # prefix.  (*New* incoming connections will be blocked in the interim.)
-    /usr/sbin/ip6tables -F FWD-INET6-IN
+    /usr/sbin/ip6tables -F $IP6TABLES_CHAIN
 
     # Do we have a new prefix?
     if [ -n "$new_ip6_prefix" ] ; then
 
-	# Create an address for iptables rules (also checks prefix length)
-	local ASTERISK_ADDR
-	if ASTERISK_ADDR=$(v6merge $new_ip6_prefix ff::1) ; then
+	local PREFIXLEN=${new_ip6_prefix#*/}
+	if [ $PREFIXLEN -gt 56 -o $PREFIXLEN -lt 48 -o $((PREFIXLEN%4)) != 0 ] ; then
+	    /usr/bin/logger "ip6-prefix: ignoring invalid prefix: $new_ip6_prefix"
 
-	    # We have a usable prefix; (re-)create the iptables rules.
-	    /usr/sbin/ip6tables -A FWD-INET6-IN -d $ASTERISK_ADDR -p icmpv6 -j ACCEPT
-	    /usr/sbin/ip6tables -A FWD-INET6-IN -d $ASTERISK_ADDR -p tcp -m tcp --dport 80 -j ACCEPT
-	    /usr/sbin/ip6tables -A FWD-INET6-IN -d $ASTERISK_ADDR -p tcp -m tcp --dport 443 -j ACCEPT
-	    /usr/sbin/ip6tables -A FWD-INET6-IN -d $ASTERISK_ADDR -p tcp -m tcp --dport 32698 -j ACCEPT
-	    /usr/sbin/ip6tables -A FWD-INET6-IN -d $ASTERISK_ADDR -p tcp -m tcp --dport 32789:32790 -j ACCEPT
+	else
+
+	    # zero-pad a 16-bit "word" in an IPv6 address
+	    padword() {
+		local WORD=$1
+		while [ $(expr length "$WORD") -lt 4 ] ; do
+		    WORD=0${WORD}
+		done
+		echo $WORD
+	    }
+
+	    # construct an IPv6 address from a prefix and a "local" address
+	    v6merge() {
+		local PREFIX=$1
+		local HOST=$2
+		local W1=${PREFIX%%:*}
+		W1=$(padword $W1)
+		local W2=${PREFIX#*:}
+		W2=${W2%%:*}
+		W2=$(padword $W2)
+		local W3=${PREFIX#*:*:}
+		W3=${W3%%:*}
+		W3=$(padword $W3)
+		local W4=${PREFIX#*:*:*:}
+		W4=${W4%%:*}
+		W4=$(padword $W4)
+		W4=${W4%??}
+		echo "${W1}:${W2}:${W3}:${W4}${HOST}"
+	    }
+
+	    local LOCAL_ADDR
+	    for LOCAL_ADDR in ${!ALLOWED_IN[@]} ; do
+		local ADDR
+		if ADDR=$(v6merge $new_ip6_prefix $LOCAL_ADDR) ; then
+		    /usr/sbin/ip6tables -A $IP6TABLES_CHAIN -d $ADDR -p icmpv6 -j ACCEPT
+		    local PORT
+		    for PORT in ${ALLOWED_IN[$LOCAL_ADDR]} ; do
+			/usr/sbin/ip6tables -A $IP6TABLES_CHAIN -d $ADDR -p ${PORT#*/} -m ${PORT#*/} --dport ${PORT%/*} -j ACCEPT
+		    done
+		fi
+	    done
+
+	    unset -f v6merge
+	    unset -f padword
 
 	    # Create the route, if it doesn't already exist.
 	    if [ -z "$(/usr/sbin/ip -6 route show $new_ip6_prefix)" ] ; then
-        	/usr/sbin/ip -6 route add $new_ip6_prefix via fd00:dcaf:bad:ff::1
+		/usr/sbin/ip -6 route add $new_ip6_prefix proto $DENAT_RTPROTO via $LAN_ROUTER
 	    fi
+
 	fi
+
     else
-	/usr/bin/logger "ip6_prefix: removing old prefix: $old_ip6_prefix"
+	/usr/bin/logger "ip6-prefix: removing old prefix: $old_ip6_prefix"
     fi
 
     # If there is no old prefix, we're done.
@@ -91,4 +135,4 @@ ip6_prefix() {
     fi
 }
 
-ip6_prefix
+handle_delegated_ipv6_prefix
