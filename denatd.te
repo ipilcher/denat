@@ -1,8 +1,7 @@
-policy_module(denatd, 0.0.1)
+policy_module(denatd, 0.0.2)
 
 require {
 	type devlog_t;
-	type dhcpc_var_run_t;
 	type kernel_t;
 	type node_t;
 	type unconfined_t;
@@ -16,8 +15,8 @@ init_daemon_domain(denatd_t, denatd_exec_t)
 corenet_port(denatd_port_t)
 
 # Allow logging to syslog
-allow denatd_t self:unix_dgram_socket { create connect write };                                                            
-allow denatd_t devlog_t:sock_file write;                                                                                     
+allow denatd_t self:unix_dgram_socket { create connect write };
+allow denatd_t devlog_t:sock_file write;
 allow denatd_t kernel_t:unix_dgram_socket sendto;
 
 # getifaddrs(3) uses a netlink socket
@@ -30,6 +29,3 @@ allow denatd_t node_t:tcp_socket { node_bind };
 
 # Allow unconfined programs to talk to the service
 allow unconfined_t denatd_port_t:tcp_socket { name_connect };
-
-# Allow reading the dhclient prefix file
-allow denatd_t dhcpc_var_run_t:file { read open };
