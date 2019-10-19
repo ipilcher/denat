@@ -51,11 +51,6 @@ handle_delegated_ipv6_prefix() {
     [ "$interface" = $WAN_INTERFACE ] || return
     [ -z "$old_ip6_prefix" -a -z "$new_ip6_prefix" ] && return
 
-    # We always write a new state file (which will contain only a blank line if
-    # we don't have prefix).
-    echo "$new_ip6_prefix" > /run/dhclient6-prefix.new
-    mv /run/dhclient6-prefix.new /run/dhclient6-prefix
-
     # Flush the ip6tables rules; we'll (re-)create them if we have a valid new
     # prefix.  (*New* incoming connections will be blocked in the interim.)
     /usr/sbin/ip6tables -F $IP6TABLES_CHAIN
