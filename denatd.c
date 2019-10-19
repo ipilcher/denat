@@ -1,3 +1,19 @@
+/*
+ * Copyright 2017, 2019 Ian Pilcher <arequipeno@gmail.com>
+ *
+ * This program is free software.  You can redistribute it or modify it under
+ * the terms of version 2 of the GNU General Public License (GPL), as published
+ * by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY -- without even the implied warranty of MERCHANTIBILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the text of the GPL for more details.
+ *
+ * Version 2 of the GNU General Public License is available at:
+ *
+ *   http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+ */
+
 #define _BSD_SOURCE		/* for vsyslog */
 
 #include <sys/socket.h>
@@ -40,6 +56,9 @@ static sa_family_t ip_version = AF_UNSPEC;
 static struct in_addr laddr4 = { .s_addr = INADDR_ANY };
 
 static struct in6_addr laddr6 = IN6ADDR_ANY_INIT;
+
+/* Routing protocol number */
+static uint8_t rtproto = 255;
 
 /*
  *      Logging
@@ -106,7 +125,9 @@ __attribute__((noreturn))
 static void show_help(int status)
 {
 	printf("Usage: %s [-4|--ipv4] [-d|--debug] [-v|--verbose] [-h|--help]\n"
-	       "\t[-l|--listen address] [-p|--port port]\n", EXEC_NAME);
+	       "\t[-l|--listen address] [-p|--port port] "
+	       "[-r|--rtproto proto]\n",
+	       EXEC_NAME);
 	exit(status);
 }
 
@@ -187,6 +208,35 @@ invalid_port:
 	show_help(EXIT_FAILURE);
 }
 
+static int parse_rtproto(int i, int argc, char *argv[])
+{
+	char *endptr;
+	long proto;
+
+	if (++i >= argc) {
+		fprintf(stderr, "%s: %s option requires an argument\n",
+			EXEC_NAME, argv[i - 1]);
+		show_help(EXIT_FAILURE);
+	}
+
+	if (isspace(*argv[i]) || *argv[i] == 0)
+		goto invalid_proto;
+
+	errno = 0;
+	proto = strtol(argv[i], &endptr, 0);
+	if (errno != 0 || *endptr != 0 || proto < 0 || proto > UINT8_MAX)
+		goto invalid_proto;
+
+	rtproto = (uint8_t)proto;
+
+	return 1;
+
+invalid_proto:
+	fprintf(stderr, "%s: invalid argument for %s option: '%s'\n",
+		EXEC_NAME, argv[i - 1], argv[i]);
+	show_help(EXIT_FAILURE);
+}
+
 static int parse_laddr(int i, int argc, char *argv[])
 {
 	if (++i >= argc) {
@@ -225,10 +275,11 @@ static struct option  options[] = {
 	{ "-v", "--verbose",	parse_verbose,	0 },
 	{ "-p", "--port", 	parse_lport, 	0 },
 	{ "-l", "--listen", 	parse_laddr, 	0 },
+	{ "-r", "--rtproto",	parse_rtproto,	0 },
 	{ "-h", "--help", 	parse_help, 	0 },
 	{ NULL, NULL, 		0, 		0 }
 };
-	
+
 /* Errors during argument parsing are sent to stderr; systemd should log them */
 static void parse_args(int argc, char *argv[])
 {
@@ -271,6 +322,7 @@ static void parse_args(int argc, char *argv[])
         	dbug("debug = %d\n", debug);
 	        dbug("verbose = %d\n", verbose);
         	dbug("lport = %" PRIu16 "\n", lport);
+		dbug("rtproto = %" PRIu8 "\n", rtproto);
 	        dbug("ip_version = %d\n", ip_version);
         	dbug("laddr4 = %s\n",
 		     inet_ntop(AF_INET, &laddr4, buf, sizeof buf));
@@ -386,7 +438,7 @@ static void get_prefix(void)
 	char buf[100];
 	ssize_t size;
 	int fd;
-	
+
 	if ((fd = open(prefix_file, O_RDONLY)) < 0) {
 		if (errno == ENOENT) {
 			info("Prefix file (%s) missing\n", prefix_file);
@@ -395,12 +447,12 @@ static void get_prefix(void)
 		error("%s: %m\n", prefix_file);
 		abort();
 	}
-	
+
 	if ((size = read(fd, buf, sizeof buf)) < 0) {
 		error("%s: %m\n", prefix_file);
 		abort();
 	}
-	
+
 	if (size > 0) {
 		--size;
 		if (buf[size] != '\n') {
@@ -413,7 +465,7 @@ static void get_prefix(void)
 				warn("Output truncated\n");
 		}
 	}
-	
+
 	if (close(fd) < 0) {
 		error("%s: %m\n", prefix_file);
 		abort();
@@ -494,7 +546,7 @@ static void log_conn(union sockaddr_inX *addr)
 
 	dbug("Connection from %s/%" PRIu16 "\n", buf, port);
 }
-		
+
 
 int main(int argc, char *argv[])
 {
