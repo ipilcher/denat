@@ -1,12 +1,13 @@
 [Unit]
-Description=Dynamic IP update client
+Description=Dynamic network update client
 After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/denatc
-User=denatc
-Group=denatc
+ExecStart=/usr/local/bin/denatc -d
+User=root
+Group=root
+WorkingDirectory=/var/lib/denatc
 
 [Install]
 WantedBy=multi-user.target
