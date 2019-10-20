@@ -1,3 +1,19 @@
+#
+# Copyright 2017, 2019 Ian Pilcher <arequipeno@gmail.com>
+#
+# This program is free software.  You can redistribute it or modify it under
+# the terms of version 2 of the GNU General Public License (GPL), as published
+# by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY -- without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the text of the GPL for more details.
+#
+# Version 2 of the GNU General Public License is available at:
+#
+#	http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+#
+
 ###
 ###	dhclient exit hook scripts are sourced by the main dhclient script
 ###	(/usr/sbin/dhclient-script), so we can't "exit" from the hook script
@@ -42,7 +58,7 @@ handle_delegated_ipv6_prefix() {
     #
     declare -A ALLOWED_IN
     ALLOWED_IN['ff::1/128']='80/tcp 443/tcp 32698/tcp 32789:32790/tcp'
-    ALLOWED_IN['fa::/64']='5060/udp'
+    #ALLOWED_IN['fa::/64']='5060/udp'
 
     ###
     ###	    END OF CONFIGURATION
