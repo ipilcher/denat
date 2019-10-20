@@ -1,2 +1,4 @@
-/etc/denatc(/.*)?		system_u:object_r:denatc_etc_t:s0
-/var/lib/denatc(/.*)?		system_u:object_r:denatc_var_lib_t:s0
+/etc/denatc(/.*)?			system_u:object_r:denatc_etc_t:s0
+/var/lib/denatc(/.*)?			system_u:object_r:denatc_var_lib_t:s0
+
+/usr/lib/systemd/system/radvd.*		system_u:object_r:radvd_unit_file_t:s0
