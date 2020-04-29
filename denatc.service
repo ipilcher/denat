@@ -1,10 +1,13 @@
 [Unit]
 Description=Dynamic network update client
-After=network-online.target
+After=network-online.target ipa.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/denatc -d
+PrivateTmp=true
+ExecStartPre=/usr/bin/ln -s /usr/bin/python2 /tmp/python.denatc
+ExecStartPre=/usr/bin/chcon --reference=/usr/local/bin/denatc --no-dereference /tmp/python.denatc
+ExecStart=/tmp/python.denatc /usr/local/bin/denatc -d
 User=root
 Group=root
 WorkingDirectory=/var/lib/denatc
