@@ -5,8 +5,8 @@ After=network-online.target ipa.service
 [Service]
 Type=simple
 PrivateTmp=true
-ExecStartPre=/usr/bin/ln -s /usr/bin/python2 /tmp/python.denatc
-ExecStartPre=/usr/bin/chcon --reference=/usr/local/bin/denatc --no-dereference /tmp/python.denatc
+ExecStartPre=/usr/bin/cp /usr/bin/python2 /tmp/python.denatc
+ExecStartPre=/usr/bin/chcon --reference=/usr/local/bin/denatc /tmp/python.denatc
 ExecStart=/tmp/python.denatc /usr/local/bin/denatc -d
 User=root
 Group=root
