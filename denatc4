@@ -1,0 +1,280 @@
+#!/usr/bin/python
+
+#
+# Copyright 2017, 2019, 2020 Ian Pilcher <arequipeno@gmail.com>
+#
+# This program is free software.  You can redistribute it or modify it under
+# the terms of version 2 of the GNU General Public License (GPL), as published
+# by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY -- without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the text of the GPL for more details.
+#
+# Version 2 of the GNU General Public License is available at:
+#
+#	http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+#
+
+
+import argparse
+import ConfigParser
+import errno
+import logging
+import netaddr
+import os
+import re
+import requests
+import socket
+import stat
+import string
+import time
+
+from logging.handlers import SysLogHandler
+
+
+###
+###	Initial setup
+###
+
+parser = argparse.ArgumentParser(description='Dynamic network reconfiguration client')
+parser.add_argument('-f', '--foreground', action='store_true', help='Log to stderr, not syslog')
+parser.add_argument('-d', '--debug', action='store_true', help='Log debug messages')
+ARGS = parser.parse_args()
+
+CFG = {}
+
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.DEBUG if ARGS.debug else logging.INFO)
+
+if ARGS.foreground:
+	LOG.addHandler(logging.StreamHandler())
+else:
+	lh = SysLogHandler(address = '/dev/log', facility = SysLogHandler.LOG_DAEMON)
+	LOG.addHandler(lh)
+
+
+###
+###	Config file parsing
+###
+
+def get_ipv4_gateway():
+
+        with open('/proc/net/route') as fh:
+
+                for line in fh:
+
+                        fields = line.strip().split()
+                        if fields[1] != '00000000' or not int(fields[3], 16) & 2:
+                                continue
+
+                        return str(netaddr.IPAddress(socket.htonl(int(fields[2], 16))))
+
+                return None
+
+
+def parse_config():
+
+	cp = ConfigParser.RawConfigParser()
+	cp.read(['/etc/denatc/denatc4.conf'])
+
+	if cp.has_option('firewall', 'host'):
+		CFG['host'] = cp.get('firewall', 'host')
+	else:
+		CFG['host'] = get_ipv4_gateway()
+
+	CFG['port'] = 9797
+	if cp.has_option('firewall', 'port'):
+		CFG['port'] = cp.get('firewall', 'port')
+
+	CFG['interface'] = None
+	if cp.has_option('firewall', 'interface'):
+		CFG['interface'] = cp.get('firewall', 'interface')
+
+	CFG['username'] = cp.get('dns', 'username')
+	CFG['password'] = cp.get('dns', 'password')
+
+	if cp.has_option('dns', 'hostname'):
+		CFG['hostname'] = cp.get('dns', 'hostname')
+	else:
+		CFG['hostname'] = socket.getfqdn(socket.gethostname()).partition('.')[2]
+
+
+###
+###	Get public IP from the firewall
+###
+
+def is_public_ip(ip):
+
+        return not ( ip.is_reserved()
+                        or ip.is_private()
+                        or ip.is_multicast()
+                        or ip.is_loopback()
+                        or ip.is_link_local()
+                        or ip.is_ipv4_mapped()
+                        or ip.is_ipv4_compat()  )
+
+
+def get_firewall_ip():
+
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	try:
+		s.connect((CFG['host'], CFG['port']))
+		lines = s.recv(1024).splitlines()
+	except Exception as e:
+		LOG.error(unicode(e))
+		return None
+	finally:
+		s.close()
+
+	for line in lines:
+
+		fields = string.split(line)
+
+		if fields[0] != CFG['interface']:
+			continue;
+
+		ip = netaddr.IPAddress(fields[1])
+
+		if ip.version == 4 and is_public_ip(ip):
+			return ip
+
+	return None
+
+
+###
+###	Update Hurricane Electric DNS
+###
+
+def update_he_dns_ip(ip):
+
+	auth = (CFG['hostname'], CFG['password'])
+
+	try:
+		req = requests.get('https://dyn.dns.he.net/nic/update', auth=auth,
+				   params={ 'hostname': CFG['hostname'], 'myip': ip })
+		LOG.info('Updated DNS for %s', ip)
+	except Exception as e:
+		LOG.error('DNS update error: {0}\n'.format(unicode(e)))
+		return
+	if req.status_code != 200:
+		response = string.split(req.text)[0]
+		if response != 'good' and response != 'nochg':
+			LOG.error('DNS update error: {0}: {1}: {2}\n'.format(
+				  req.status_code, req.reason, req.text))
+
+
+###
+###	Update Asterisk SIP configuration
+###
+
+def update_sip_conf(ip):
+
+	if ip is None:
+		LOG.warning('No IPV4 address; not updating Asterisk')
+		return
+
+	with open('/etc/asterisk/sip.conf', 'r') as fh:
+		old = fh.read()
+
+	p = re.compile('^externaddr=.*$', re.MULTILINE)
+	new = p.sub('externaddr={0}'.format(ip), old, count=1)
+
+	try:
+		os.remove('/etc/asterisk/sip.conf.new')
+	except EnvironmentError as e:
+		if e.errno != errno.ENOENT:
+			raise
+
+	umask = os.umask(0)
+	try:
+		fd = os.open('/etc/asterisk/sip.conf.new',
+			     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+			     stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP)
+	finally:
+		os.umask(umask)
+
+	with os.fdopen(fd, 'w') as fh:
+		fh.write(new)
+
+	os.rename('/etc/asterisk/sip.conf.new', '/etc/asterisk/sip.conf')
+
+
+def reload_sip_conf():
+
+	try:
+		s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+		s.connect('/var/run/asterisk/asterisk.ctl')
+		s.recv(256)
+		s.send('cli quit after sip reload\0')
+		s.recv(256)
+	finally:
+		s.close()
+
+
+###
+###	State file
+###
+
+def read_state_file():
+
+	try:
+		with open('/var/lib/denatc/state4', 'r') as fh:
+			return netaddr.IPAddress(fh.read())
+	except EnvironmentError as e:
+		if e.errno == errno.ENOENT:
+			return None
+		else:
+			raise
+
+
+def write_state_file(ip):
+
+	try:
+		os.remove('/var/lib/denatc/state4.new')
+	except EnvironmentError as e:
+		if e.errno != errno.ENOENT:
+			raise
+
+	fd = os.open('/var/lib/denatc/state4.new', os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+		     stat.S_IRUSR | stat.S_IWUSR)
+	try:
+		if ip is not None:
+			os.write(fd, '{0}\n'.format(str(ip)))
+	finally:
+		os.close(fd)
+
+	os.rename('/var/lib/denatc/state4.new', '/var/lib/denatc/state4')
+
+
+###
+###	Do something!
+###
+
+try:
+
+	parse_config()
+	state_ip = read_state_file()
+
+	while True:
+
+		current_ip = get_firewall_ip()
+
+		if current_ip != state_ip:
+
+			LOG.info('Public IP has changed from %s to %s',
+				 str(state_ip), str(current_ip))
+
+			if current_ip is not None:
+				update_sip_conf(current_ip)
+				reload_sip_conf()
+				update_he_dns_ip(current_ip)
+
+			write_state_file(current_ip)
+			state_ip = current_ip
+
+			time.sleep(60)
+
+
+except Exception as e:
+	LOG.critical(unicode(e), exc_info=1)
