@@ -273,7 +273,7 @@ try:
 			write_state_file(current_ip)
 			state_ip = current_ip
 
-			time.sleep(60)
+		time.sleep(60)
 
 
 except Exception as e:
