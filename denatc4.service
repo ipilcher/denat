@@ -1,0 +1,17 @@
+[Unit]
+Description=Dynamic network update client (IPv4 only)
+After=network-online.target named.service named-pkcs11.service ipa.service
+
+[Service]
+Type=simple
+PrivateTmp=true
+ExecStartPre=/usr/bin/cp /usr/bin/python2 /tmp/python.denatc4
+ExecStartPre=/usr/bin/chcon --reference=/usr/local/bin/denatc4 /tmp/python.denatc4
+ExecStart=/tmp/python.denatc4 /usr/local/bin/denatc4 -d
+User=denatc
+Group=denatc
+WorkingDirectory=/var/lib/denatc
+#AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target
