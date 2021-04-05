@@ -167,7 +167,7 @@ def update_he_dns_ip(ip):
 
 
 ###
-###	Update Asterisk SIP configuration
+###	Update Asterisk SIP configuration (chan_sip)
 ###
 
 def update_sip_conf(ip):
@@ -209,6 +209,57 @@ def reload_sip_conf():
 		s.connect('/var/run/asterisk/asterisk.ctl')
 		s.recv(256)
 		s.send('cli quit after sip reload\0')
+		s.recv(256)
+	finally:
+		s.close()
+
+
+###
+###	Update Asterisk SIP configuration (chan_pjsip)
+###
+
+def update_pjsip_conf(ip):
+
+	def repl(match):
+		return 'external_' + match.group(1) + '_address = ' + str(ip)
+
+	if ip is None:
+		LOG.warning('No IPV4 address; not updating Asterisk')
+		return
+
+	with open('/etc/asterisk/pjsip.conf', 'r') as fh:
+		old = fh.read()
+
+	regex = re.compile('^external_(media|signaling)_address ?= ?(.*)$', re.MULTILINE)
+	new = regex.sub(repl, old)
+
+	try:
+		os.remove('/etc/asterisk/pjsip.conf.new')
+	except EnvironmentError as e:
+		if e.errno != errno.ENOENT:
+			raise
+
+	umask = os.umask(0)
+	try:
+		fd = os.open('/etc/asterisk/pjsip.conf.new',
+			     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+			     stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP)
+	finally:
+		os.umask(umask)
+
+	with os.fdopen(fd, 'w') as fh:
+		fh.write(new)
+
+	os.rename('/etc/asterisk/pjsip.conf.new', '/etc/asterisk/pjsip.conf')
+
+
+def reload_pjsip_conf():
+
+	try:
+		s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+		s.connect('/var/run/asterisk/asterisk.ctl')
+		s.recv(256)
+		s.send('cli quit after pjsip reload\0')
 		s.recv(256)
 	finally:
 		s.close()
@@ -268,8 +319,8 @@ try:
 				 str(state_ip), str(current_ip))
 
 			if current_ip is not None:
-				update_sip_conf(current_ip)
-				reload_sip_conf()
+				update_pjsip_conf(current_ip)
+				reload_pjsip_conf()
 				update_he_dns_ip(current_ip)
 
 			write_state_file(current_ip)
